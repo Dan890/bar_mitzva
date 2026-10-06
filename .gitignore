@@ -2,3 +2,7 @@
 Thumbs.db
 *.log
 .vscode/
+
+# audio work files (tools/)
+**/media/_*
+tools/__pycache__/
