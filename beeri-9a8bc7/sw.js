@@ -1,5 +1,5 @@
 /* Service worker — per-student offline shell + media caching (Beeri Shlomo) */
-const CACHE = "beeri-torah-v2";
+const CACHE = "beeri-torah-v3";
 const ASSETS = [
   "./",
   "./index.html",
@@ -9,16 +9,16 @@ const ASSETS = [
   "./original_env.js",
   "./manifest.webmanifest",
   "./media/full.oga",
-  "../app/app.js?v=26",
-  "../app/style.css?v=26",
+  "../app/app.js?v=27",
+  "../app/style.css?v=27",
   "../app/fonts/TorahStamAshkenaz.ttf",
   "../app/fonts/TaameyFrankCLM-Medium.ttf",
-  "../img/hero-dark.png",
-  "../img/hero-light.png",
-  "../icons/icon-192.png",
-  "../icons/icon-512.png",
-  "../icons/apple-touch-icon.png",
-  "../icons/favicon.png"
+  "./img/hero-dark.png",
+  "./img/hero-light.png",
+  "./icons/icon-192.png",
+  "./icons/icon-512.png",
+  "./icons/apple-touch-icon.png",
+  "./icons/favicon.png"
 ];
 
 self.addEventListener("install", (e) => {

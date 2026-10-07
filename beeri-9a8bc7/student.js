@@ -2,6 +2,7 @@
 window.STUDENT = {
   id: "beeri",                                 // storage namespace: beeri_* keys, IndexedDB "toraOr_beeri"
   name: "בארי שלמה",
+  brand: "תורת בארי",
   subtitle: "הקריאה של בארי שלמה לבר מצווה",
   ref: "שבת פרשת תצווה · עלייה ראשונה · שמות כ״ז כ׳ – כ״ח י״ב",
   media: {

@@ -6,6 +6,7 @@ const DEFAULT_TIMINGS = window.TIMINGS || null;   // {verses:[{start,end,words:[
 /* per-student content bundle (name, media, storage namespace) */
 const STUDENT = window.STUDENT || { id:"ori", name:"אורי" };
 const SID = STUDENT.id || "ori";
+const BRAND = STUDENT.brand || "תורה אורי";
 const LEGACY = (SID === "ori");                    // "ori" keeps the original keys so nothing is lost
 const LS_KEY  = LEGACY ? "ori_timings_v1" : SID + "_timings_v1";
 const K_NIKUD = LEGACY ? "ori_nikud"      : SID + "_nikud";
@@ -259,7 +260,7 @@ function celebrate(){
   const img = heroEl ? heroEl.src : "";   // reuse the header logo path (works in any folder)
   const nm = (STUDENT && STUDENT.name) ? STUDENT.name : "";
   uiModal({
-    message:(img?'<img src="'+img+'" alt="תורה אורי" style="height:118px;width:auto;display:block;margin:0 auto 12px">':'')+
+    message:(img?'<img src="'+img+'" alt="'+BRAND+'" style="height:118px;width:auto;display:block;margin:0 auto 12px">':'')+
             '<div style="font-weight:800;font-size:1.2rem;margin-bottom:4px">כל הכבוד'+(nm?", "+nm:"")+'! 🎉</div>'+
             '<div>סיימת מעבר על כל הקטע ב'+levelName()+' — אשריך!</div>',
     okText:"תודה!", cancelText:null
@@ -619,7 +620,7 @@ function compareVerse(vi){
       .then(buf=>{ try{ctx.close();}catch(e){}
         setTimeout(()=>{
           const HOP=ORIG_ENV.hop||0.04;
-          const userF=computeUserFrames(buf);
+          const userF=dropSilence(computeUserFrames(buf));
           const origF={fe:oe.fe, fp:oe.fp, fv:oe.fv, hop:HOP};
           let scores=null, overall=null;
           if(userF){
@@ -637,10 +638,11 @@ function compareVerse(vi){
 function renderCompare(vi,r){
   const box=ensureCmpBox(vi);
   const ratio=r.userDur/r.origDur;
-  let tempo,tclass;
-  if(ratio<=1.15 && ratio>=0.87){ tempo="קצב טוב 👍"; tclass="good"; }
-  else if(ratio<0.87){ tempo="מהר מדי — כדאי להאט"; tclass="warn"; }
-  else { tempo="לאט מדי — אפשר לזרז"; tclass="warn"; }
+  // tempo is information only — it does not affect the score (melody matters, not speed)
+  let tempo,tclass="";
+  if(ratio<0.6){ tempo="מהיר מהמקור — אפשר להאט קצת"; }
+  else if(ratio>2){ tempo="איטי מהמקור — זה בסדר בזמן לימוד"; }
+  else { tempo="קצב טוב 👍"; tclass="good"; }
 
   let overallRow="", pitchCanvas="";
   const canPitch = r.overall!=null && r.oe.fp && r.userF && r.userF.fp;
@@ -696,6 +698,15 @@ function computeUserFrames(buf){
   let fp=null;
   if(voiced.length>=5){ const med=medianOf(voiced)||1; fp=f0s.map((f,i)=> fv[i]? 12*Math.log2(f/med):NaN); interpNaN(fp); }
   return {fe, fp, fv, hop:0.04, dur:buf.duration};
+}
+/* Pauses and hesitations should not cost points: drop the user's silent frames before
+   alignment, so only how the words are sung is judged, not how fast they come. */
+function dropSilence(userF){
+  if(!userF) return userF;
+  const keep=[]; for(let i=0;i<userF.fe.length;i++) if(userF.fv[i] || userF.fe[i]>=0.05) keep.push(i);
+  if(keep.length<10 || keep.length===userF.fe.length) return userF;
+  return {fe:keep.map(i=>userF.fe[i]), fp:userF.fp?keep.map(i=>userF.fp[i]):null, fv:keep.map(i=>userF.fv[i]),
+          hop:userF.hop, dur:userF.dur};
 }
 function dtwPath(userF, origF){
   const n=userF.fe.length, m=origF.fe.length; const INF=1e18;
@@ -1030,10 +1041,15 @@ function shareFullRec(){
   recGet("full").then(function(rec){ if(!rec) return;
     var mime=rec.mime||(rec.blob&&rec.blob.type)||"audio/webm";
     var ext=(mime.indexOf("mp4")>=0||mime.indexOf("m4a")>=0)?"m4a":(mime.indexOf("ogg")>=0?"ogg":"webm");
-    var fname="הקלטה-"+((STUDENT&&STUDENT.name)||"תורה-אורי")+"."+ext;
+    var fname="הקלטה-"+((STUDENT&&STUDENT.name)||BRAND).replace(/\s+/g,"-")+"."+ext;
     var file=null; try{ file=new File([rec.blob],fname,{type:mime}); }catch(e){}
-    if(file && navigator.canShare && navigator.canShare({files:[file]})){
-      navigator.share({files:[file], title:"תורה אורי", text:"ההקלטה שלי · תורה אורי"}).catch(function(){});
+    if(window.HakriaApp && HakriaApp.shareAudio){
+      // inside the Android app: WebView has no Web Share / downloads, hand the file to the native share sheet
+      var fr=new FileReader();
+      fr.onload=function(){ HakriaApp.shareAudio(String(fr.result).split(",")[1], mime, fname, "ההקלטה שלי · "+BRAND); };
+      fr.readAsDataURL(rec.blob);
+    } else if(file && navigator.canShare && navigator.canShare({files:[file]})){
+      navigator.share({files:[file], title:BRAND, text:"ההקלטה שלי · "+BRAND}).catch(function(){});
     } else {
       var a=document.createElement("a"); a.href=URL.createObjectURL(rec.blob); a.download=fname;
       document.body.appendChild(a); a.click(); a.remove();
@@ -1061,7 +1077,7 @@ function compareFull(){
     rec.blob.arrayBuffer().then(function(ab){ return new Promise(function(res,rej){ const p=ctx.decodeAudioData(ab,res,rej); if(p&&p.then)p.then(res,rej); }); })
       .then(function(buf){ try{ctx.close();}catch(e){}
         setTimeout(function(){
-          const userF=computeUserFrames(buf);
+          const userF=dropSilence(computeUserFrames(buf));
           const ref=buildFullRef();
           if(!userF){ l4r.innerHTML='<div class="cmp-loading">לא הצלחתי לנתח את ההקלטה.</div>'; return; }
           const path=dtwPath(userF, ref);
