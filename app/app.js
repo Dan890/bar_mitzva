@@ -674,8 +674,8 @@ function renderCompare(vi,r){
 /* ---- phase 3: frame features, DTW alignment, per-word scoring ---- */
 function computeUserFrames(buf){
   const m=toMono16k(buf), data=m.data, sr=m.sr;
-  const WIN=1024, HOP=Math.round(sr*0.04), THRESH=0.15;
-  const tauMin=Math.floor(sr/400), tauMax=Math.min(Math.floor(sr/80),WIN-1), NEED=WIN+tauMax;
+  const WIN=1024, HOP=Math.round(sr*0.04), THRESH=0.15, FMAX=700;   // children sing well above 400 Hz
+  const tauMin=Math.floor(sr/FMAX), tauMax=Math.min(Math.floor(sr/80),WIN-1), NEED=WIN+tauMax;
   const fe=[], f0s=[], fv=[]; const d=new Float64Array(tauMax+1), dp=new Float64Array(tauMax+1);
   for(let s=0; s+NEED<=data.length; s+=HOP){
     let e=0; for(let j=0;j<WIN;j++){ const x=data[s+j]; e+=x*x; } fe.push(Math.sqrt(e/WIN));
@@ -688,7 +688,7 @@ function computeUserFrames(buf){
     if(best<0){ let mi=tauMin; for(let k=tauMin;k<=tauMax;k++) if(dp[k]<dp[mi]) mi=k; best=mi; }
     let shift=0; if(best>1&&best<tauMax){ const a=dp[best-1],b=dp[best],c=dp[best+1],den=a+c-2*b; shift=den?0.5*(a-c)/den:0; }
     const per=best+shift, f0=per>0? sr/per:0;
-    f0s.push(f0); fv.push((dp[best]<THRESH && f0>=80 && f0<=400)?1:0);
+    f0s.push(f0); fv.push((dp[best]<THRESH && f0>=80 && f0<=FMAX)?1:0);
   }
   if(!fe.length) return null;
   let mx=0; for(const x of fe) if(x>mx) mx=x; mx=mx||1; for(let i=0;i<fe.length;i++) fe[i]/=mx;
@@ -717,23 +717,37 @@ function dtwPath(userF, origF){
   path.reverse(); return path;
 }
 function wordScores(path, userF, origF, words, hop){
+  const m=origF.fe.length;
+  return scoreWords(path, userF, origF, words.map(function(w){
+    const oj0=Math.max(0,Math.floor(w[0]/hop)), oj1=Math.min(m-1,Math.ceil(w[1]/hop));
+    return [oj0, Math.max(oj0,oj1)];
+  }));
+}
+/* Melody score per word, judged against a "no melody" baseline: a flat monotone or a random
+   tune must score near 0, not ~80. spans = [[oj0,oj1]] frame ranges in the original. */
+function scoreWords(path, userF, origF, spans){
   const m=origF.fe.length; const o2u=Array.from({length:m},()=>[]);
   for(const pr of path){ o2u[pr[1]].push(pr[0]); }
-  return words.map(function(w){
-    let oj0=Math.max(0,Math.floor(w[0]/hop)), oj1=Math.min(m-1,Math.ceil(w[1]/hop)); if(oj1<oj0) oj1=oj0;
-    let sum=0,cnt=0, eSum=0,eCnt=0;
-    for(let oj=oj0;oj<=oj1;oj++){
-      for(const ui of o2u[oj]){
-        eSum+=userF.fe[ui]; eCnt++;
-        if(origF.fp && userF.fp && origF.fv[oj] && userF.fv[ui]){ sum+=Math.abs(userF.fp[ui]-origF.fp[oj]); cnt++; }
-      }
+  const per=spans.map(function(sp){
+    const u=[],o=[]; let eSum=0,eCnt=0;
+    for(let oj=sp[0];oj<=sp[1]&&oj<m;oj++){
+      for(const ui of o2u[oj]){ eSum+=userF.fe[ui]; eCnt++;
+        if(origF.fp && userF.fp && origF.fv[oj] && userF.fv[ui]){ u.push(userF.fp[ui]); o.push(origF.fp[oj]); } }
     }
-    const avgE = eCnt? eSum/eCnt : 0;
-    let score, dev=null;
-    if(avgE<0.06){ score=0; }                                   // missed / silent
-    else if(cnt>=2){ dev=sum/cnt; score=Math.max(0,Math.min(100, Math.round(100-(dev-1)*18))); }
-    else { score=60; }                                          // unmeasurable melody -> neutral
-    return {score, dev};
+    return {u,o,avgE:eCnt?eSum/eCnt:0};
+  });
+  return per.map(function(w,wi){
+    if(w.avgE<0.06) return {score:0, dev:null};                // missed / silent
+    // window = word + neighbours, so short words still have enough melody to judge
+    let u=[],o=[]; for(let k=Math.max(0,wi-1);k<=Math.min(per.length-1,wi+1);k++){ u=u.concat(per[k].u); o=o.concat(per[k].o); }
+    if(u.length<6) return {score:50, dev:null};                // unmeasurable melody -> neutral
+    const n=u.length; let mu=0,mo=0; for(let i=0;i<n;i++){mu+=u[i];mo+=o[i];} mu/=n; mo/=n;
+    // deviation after removing the local offset, relative to how much the original moves here
+    let dev=0, spread=0; for(let i=0;i<n;i++){ dev+=Math.abs((u[i]-mu)-(o[i]-mo)); spread+=Math.abs(o[i]-mo); } dev/=n; spread/=n;
+    const ratio=dev/Math.max(spread,0.8);                       // 0 = perfect, ~1 = no better than a flat line
+    const sDev=Math.max(0,Math.min(1,(0.95-ratio)/0.6));
+    const c=pearson(u,o), sCor=Math.max(0,Math.min(1,(c-0.15)/0.6));
+    return {score:Math.round(100*(0.5*sDev+0.5*sCor)), dev};
   });
 }
 function colorWords(vi, scores){
@@ -1051,19 +1065,8 @@ function compareFull(){
           const ref=buildFullRef();
           if(!userF){ l4r.innerHTML='<div class="cmp-loading">לא הצלחתי לנתח את ההקלטה.</div>'; return; }
           const path=dtwPath(userF, ref);
-          const o2u=[]; for(let j=0;j<ref.fe.length;j++) o2u.push([]);
-          for(let i=0;i<path.length;i++){ o2u[path[i][1]].push(path[i][0]); }
-          const scores=ref.words.map(function(w){
-            let sum=0,cnt=0,eSum=0,eCnt=0;
-            for(let oj=w.oj0;oj<=w.oj1 && oj<ref.fe.length;oj++){
-              const us=o2u[oj];
-              for(let z=0;z<us.length;z++){ const ui=us[z]; eSum+=userF.fe[ui]; eCnt++;
-                if(ref.fp && userF.fp && ref.fv[oj] && userF.fv[ui]){ sum+=Math.abs(userF.fp[ui]-ref.fp[oj]); cnt++; } }
-            }
-            const avgE=eCnt?eSum/eCnt:0; let sc;
-            if(avgE<0.06) sc=0; else if(cnt>=2){ const dev=sum/cnt; sc=Math.max(0,Math.min(100,Math.round(100-(dev-1)*18))); } else sc=60;
-            return {vi:w.vi, wi:w.wi, score:sc};
-          });
+          const ws=scoreWords(path, userF, ref, ref.words.map(function(w){ return [w.oj0, w.oj1]; }));
+          const scores=ref.words.map(function(w,k){ return {vi:w.vi, wi:w.wi, score:ws[k].score}; });
           colorFull(scores);
           const overall=Math.round(scores.reduce(function(a,s){return a+s.score;},0)/scores.length);
           const oc=overall>=75?"good":(overall>=50?"":"warn");
