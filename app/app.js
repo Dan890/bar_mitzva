@@ -480,6 +480,8 @@ function uiConfirm(message,opts){ opts=opts||{}; return uiModal({message:message
 function uiAlert(message,opts){ opts=opts||{}; return uiModal({message:message, title:opts.title, icon:opts.icon, okText:opts.okText||"הבנתי", cancelText:null}); }
 
 /* ================= USER RECORDINGS (record your own reading) ================= */
+// raw singing: the browser's voice-call processing (noise suppression, auto gain) distorts melody and dynamics
+const REC_AUDIO={echoCancellation:false, noiseSuppression:false, autoGainControl:false};
 const STORE="recordings";  /* DB_NAME defined at top from the student bundle */
 function idb(){
   return new Promise((res,rej)=>{
@@ -541,7 +543,7 @@ function startUserRec(vi){
     stopAll();                     // stop original playback
     if(mineAudio) mineAudio.pause();
     clearCmp(vi);                  // old comparison is stale once re-recording
-    navigator.mediaDevices.getUserMedia({audio:true}).then(stream=>{
+    navigator.mediaDevices.getUserMedia({audio:REC_AUDIO}).then(stream=>{
       recStream=stream; recChunks=[];
       const mime=pickMime();
       try{ mediaRec = mime ? new MediaRecorder(stream,{mimeType:mime}) : new MediaRecorder(stream); }
@@ -791,6 +793,11 @@ function toMono16k(buf){
   const sr=buf.sampleRate, d=buf.getChannelData(0), target=16000;
   if(sr===target) return {data:d, sr:target};
   const n=Math.max(1,Math.round(d.length*target/sr)), out=new Float32Array(n);
+  if(sr>target){                     // box-filter over each output sample's span, so high frequencies don't alias
+    const r=sr/target;
+    for(let i=0;i<n;i++){ const a=Math.floor(i*r), b=Math.min(d.length,Math.floor((i+1)*r)); let s=0; for(let k=a;k<b;k++) s+=d[k]; out[i]=b>a? s/(b-a) : 0; }
+    return {data:out, sr:target};
+  }
   for(let i=0;i<n;i++){ const p=i*sr/target, lo=Math.floor(p), hi=Math.min(lo+1,d.length-1), f=p-lo; out[i]=d[lo]*(1-f)+d[hi]*f; }
   return {data:out, sr:target};
 }
@@ -995,7 +1002,7 @@ function renderLevel4Bar(){
 function startFullRec(){
   stopAll(); if(fullMine) fullMine.pause(); clearFullColors();
   const l4r=document.getElementById("level4result"); if(l4r) l4r.style.display="none";
-  navigator.mediaDevices.getUserMedia({audio:true}).then(function(stream){
+  navigator.mediaDevices.getUserMedia({audio:REC_AUDIO}).then(function(stream){
     fullStream=stream; fullChunks=[];
     const mime=pickMime();
     try{ fullMR=mime?new MediaRecorder(stream,{mimeType:mime}):new MediaRecorder(stream); }catch(e){ fullMR=new MediaRecorder(stream); }
