@@ -524,8 +524,24 @@ function renderRecBar(vi){
   if(has){
     bar.appendChild(mkBtn("▶ ההקלטה שלי","mine-btn",()=>playMine(vi)));
     bar.appendChild(mkBtn("🔍 השוואה למקור","cmp-btn",()=>compareVerse(vi)));
+    bar.appendChild(mkBtn("⬇ שמירה","save-btn",()=>saveRec(vi)));
     bar.appendChild(mkBtn("🗑 מחק","del-btn",()=>deleteUserRec(vi)));
   }
+}
+// save one verse recording as a file (in the Android app: hand it to the native share sheet)
+function saveRec(vi){
+  recGet(vi).then(function(rec){ if(!rec) return;
+    var mime=rec.mime||(rec.blob&&rec.blob.type)||"audio/webm";
+    var ext=(mime.indexOf("mp4")>=0||mime.indexOf("m4a")>=0)?"m4a":(mime.indexOf("ogg")>=0?"ogg":"webm");
+    var fname="הקלטה-"+((STUDENT&&STUDENT.name)||BRAND).replace(/\s+/g,"-")+"-פסוק-"+(vi+1)+"."+ext;
+    if(window.HakriaApp && HakriaApp.shareAudio){
+      var fr=new FileReader();
+      fr.onload=function(){ HakriaApp.shareAudio(String(fr.result).split(",")[1], mime, fname, "ההקלטה שלי · "+BRAND); };
+      fr.readAsDataURL(rec.blob); return;
+    }
+    var url=URL.createObjectURL(rec.blob), a=document.createElement("a"); a.href=url; a.download=fname;
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(function(){ URL.revokeObjectURL(url); },4000);
+  });
 }
 function clearCmp(vi){ const b=versesEl.querySelector('.verse[data-vi="'+vi+'"] .cmp-result'); if(b) b.remove(); clearWordColors(vi); }
 
