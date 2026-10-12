@@ -726,17 +726,29 @@ function dropSilence(userF){
   return {fe:keep.map(i=>userF.fe[i]), fp:userF.fp?keep.map(i=>userF.fp[i]):null, fv:keep.map(i=>userF.fv[i]),
           hop:userF.hop, dur:userF.dur};
 }
+function zLog(fe){
+  const l=fe.map(x=>Math.log(x+1e-3)); let m=0; for(const x of l) m+=x; m/=l.length;
+  let v=0; for(const x of l) v+=(x-m)*(x-m); v=Math.sqrt(v/l.length)||1; return l.map(x=>(x-m)/v);
+}
+/* Align the user's reading to the original. A different reader stresses, breathes and paces
+   differently, so loudness alone mis-aligns (a correct reading scored 4-37%); the melody shape
+   is the reliable anchor. Tuned on real recordings: correct 70-99%, wrong melody 11-14%.
+   The band keeps the path near the diagonal so a wrong tune can't be stitched into a match. */
 function dtwPath(userF, origF){
   const n=userF.fe.length, m=origF.fe.length; const INF=1e18;
+  const EW=1, PW=1, STEP=0.3, BAND=0.15;
+  const ue=zLog(userF.fe), oe=zLog(origF.fe), hasP=!!(userF.fp&&origF.fp);
   const bt=new Uint8Array(n*m);
   let prev=new Float64Array(m+1).fill(INF); prev[0]=0;
   const cur=new Float64Array(m+1);
   for(let i=1;i<=n;i++){
-    cur[0]=INF; const ue=userF.fe[i-1], uv=userF.fv[i-1];
-    for(let j=1;j<=m;j++){
-      const oe=origF.fe[j-1], ov=origF.fv[j-1];
-      const c=2*Math.abs(ue-oe) + (uv!==ov?0.5:0);   // align on energy + voicing (melody-independent)
-      let mn=prev[j-1], ch=2; if(prev[j]<mn){mn=prev[j];ch=0;} if(cur[j-1]<mn){mn=cur[j-1];ch=1;}
+    cur.fill(INF); const uv=userF.fv[i-1], ui=i/n;
+    const j0=Math.max(1,Math.floor((ui-BAND)*m)), j1=Math.min(m,Math.ceil((ui+BAND)*m));
+    for(let j=j0;j<=j1;j++){
+      const ov=origF.fv[j-1];
+      let c=EW*Math.min(2,Math.abs(ue[i-1]-oe[j-1])) + (uv!==ov?0.5:0);
+      if(hasP && uv && ov) c+=PW*Math.min(3,Math.abs(userF.fp[i-1]-origF.fp[j-1]))/3;
+      let mn=prev[j-1], ch=2; if(prev[j]+STEP<mn){mn=prev[j]+STEP;ch=0;} if(cur[j-1]+STEP<mn){mn=cur[j-1]+STEP;ch=1;}
       cur[j]=c+mn; bt[(i-1)*m+(j-1)]=ch;
     }
     prev.set(cur);
