@@ -642,10 +642,8 @@ function compareVerse(vi){
           const origF={fe:oe.fe, fp:oe.fp, fv:oe.fv, hop:HOP};
           let scores=null, overall=null;
           if(userF){
-            const path=dtwPath(userF, origF);
-            scores=wordScores(path, userF, origF, oe.words, HOP);
-            const valid=scores.filter(s=>s.score!=null);
-            overall=valid.length? Math.round(valid.reduce((a,s)=>a+s.score,0)/valid.length) : null;
+            const r=scoreReading(userF, origF, wordSpans(oe.words, HOP, oe.fe.length));
+            scores=r.scores; overall=r.overall;
             colorWords(vi, scores);
           }
           renderCompare(vi,{userDur:buf.duration, origDur:oe.dur, oe, userF, scores, overall});
@@ -691,10 +689,11 @@ function renderCompare(vi,r){
   }
 }
 
-/* ---- phase 3: frame features, DTW alignment, per-word scoring ---- */
+/* ---- phase 3: frame features + per-word melody search ---- */
 function computeUserFrames(buf){
   const m=toMono16k(buf), data=m.data, sr=m.sr;
-  const WIN=1024, HOP=Math.round(sr*0.04), THRESH=0.15, FMAX=700;   // children sing well above 400 Hz
+  // 0.22: home mics are noisier than the studio reference, 0.15 missed a third of sung frames
+  const WIN=1024, HOP=Math.round(sr*0.04), THRESH=0.22, FMAX=700;   // children sing well above 400 Hz
   const tauMin=Math.floor(sr/FMAX), tauMax=Math.min(Math.floor(sr/80),WIN-1), NEED=WIN+tauMax;
   const fe=[], f0s=[], fv=[]; const d=new Float64Array(tauMax+1), dp=new Float64Array(tauMax+1);
   for(let s=0; s+NEED<=data.length; s+=HOP){
@@ -714,7 +713,14 @@ function computeUserFrames(buf){
   let mx=0; for(const x of fe) if(x>mx) mx=x; mx=mx||1; for(let i=0;i<fe.length;i++) fe[i]/=mx;
   const voiced=[]; for(let i=0;i<f0s.length;i++) if(fv[i]) voiced.push(f0s[i]);
   let fp=null;
-  if(voiced.length>=5){ const med=medianOf(voiced)||1; fp=f0s.map((f,i)=> fv[i]? 12*Math.log2(f/med):NaN); interpNaN(fp); }
+  if(voiced.length>=5){
+    const med=medianOf(voiced)||1; fp=f0s.map((f,i)=> fv[i]? 12*Math.log2(f/med):NaN);
+    // octave slips of the tracker -> fold back near the median, then median-smooth single-frame spikes
+    for(let i=0;i<fp.length;i++){ if(!fv[i]) continue; while(fp[i]>7) fp[i]-=12; while(fp[i]<-7) fp[i]+=12; }
+    const sm=fp.slice();
+    for(let i=0;i<fp.length;i++){ if(!fv[i]) continue; const w=[]; for(let k=i-2;k<=i+2;k++) if(k>=0&&k<fp.length&&fv[k]) w.push(fp[k]); w.sort((a,b)=>a-b); sm[i]=w[w.length>>1]; }
+    fp=sm; interpNaN(fp);
+  }
   return {fe, fp, fv, hop:0.04, dur:buf.duration};
 }
 /* Pauses and hesitations should not cost points: drop the user's silent frames before
@@ -726,14 +732,20 @@ function dropSilence(userF){
   return {fe:keep.map(i=>userF.fe[i]), fp:userF.fp?keep.map(i=>userF.fp[i]):null, fv:keep.map(i=>userF.fv[i]),
           hop:userF.hop, dur:userF.dur};
 }
+/* Chanting sustains the vowels; plain reading doesn't. Share of the sounding time that has a
+   clear pitch: ~50-65% when chanting (like the original), ~15% when just reading the words. */
+function chantFactor(userF, origF){
+  function share(f){ let s=0,v=0; for(let i=0;i<f.fe.length;i++){ if(f.fv[i]||f.fe[i]>=0.05){ s++; if(f.fv[i]) v++; } } return v/Math.max(1,s); }
+  const r=share(userF)/Math.max(0.05,share(origF));
+  return Math.max(0,Math.min(1,(r-0.25)/0.4));
+}
 function zLog(fe){
   const l=fe.map(x=>Math.log(x+1e-3)); let m=0; for(const x of l) m+=x; m/=l.length;
   let v=0; for(const x of l) v+=(x-m)*(x-m); v=Math.sqrt(v/l.length)||1; return l.map(x=>(x-m)/v);
 }
-/* Align the user's reading to the original. A different reader stresses, breathes and paces
-   differently, so loudness alone mis-aligns (a correct reading scored 4-37%); the melody shape
-   is the reliable anchor. Tuned on real recordings: correct 70-99%, wrong melody 11-14%.
-   The band keeps the path near the diagonal so a wrong tune can't be stitched into a match. */
+/* Global alignment of the user's reading to the original, on melody shape + loudness (a different
+   reader stresses and breathes differently, so loudness alone mis-aligns). The band keeps the
+   path near the diagonal so a wrong tune can't be stitched into a match. */
 function dtwPath(userF, origF){
   const n=userF.fe.length, m=origF.fe.length; const INF=1e18;
   const EW=1, PW=1, STEP=0.3, BAND=0.15;
@@ -757,39 +769,48 @@ function dtwPath(userF, origF){
   while(i>0&&j>0){ path.push([i-1,j-1]); const ch=bt[(i-1)*m+(j-1)]; if(ch===2){i--;j--;} else if(ch===0){i--;} else {j--;} }
   path.reverse(); return path;
 }
-function wordScores(path, userF, origF, words, hop){
-  const m=origF.fe.length;
-  return scoreWords(path, userF, origF, words.map(function(w){
-    const oj0=Math.max(0,Math.floor(w[0]/hop)), oj1=Math.min(m-1,Math.ceil(w[1]/hop));
-    return [oj0, Math.max(oj0,oj1)];
-  }));
-}
-/* Melody score per word, judged against a "no melody" baseline: a flat monotone or a random
-   tune must score near 0, not ~80. spans = [[oj0,oj1]] frame ranges in the original. */
-function scoreWords(path, userF, origF, spans){
-  const m=origF.fe.length; const o2u=Array.from({length:m},()=>[]);
-  for(const pr of path){ o2u[pr[1]].push(pr[0]); }
+/* Melody score per word. The global alignment places each word; a single slip there used to
+   mis-score whole words (the same correct reading swung 35<->70 between 44.1/48 kHz), so each
+   word may shift by up to 4 frames (0.16 s) to its best fit. Scored on shape (deviation after
+   removing the offset, relative to how much the original moves + correlation), with the
+   neighbours, so a flat or random tune scores near 0. More freedom than this lets random tunes in. */
+function melodyScores(userF, origF, spans){
+  const n=userF.fe.length, m=origF.fe.length, U=userF.fp, Uv=userF.fv, O=origF.fp, Ov=origF.fv;
+  if(!U || !O) return spans.map(()=>0);
+  const SHIFT=4;
+  const path=dtwPath(userF, origF);
+  const o2u=Array.from({length:m},()=>[]); for(const p of path) o2u[p[1]].push(p[0]);
+  const map=new Int32Array(m); for(let j=0;j<m;j++){ const a=o2u[j]; map[j]=a.length? a[a.length>>1] : Math.round(j/m*n); }
+  function pairs(sp, s){ const u=[],o=[]; for(let j=sp[0];j<=sp[1]&&j<m;j++){ if(!Ov[j]) continue; const ui=map[j]+s; if(ui<0||ui>=n||!Uv[ui]) continue; u.push(U[ui]); o.push(O[j]); } return {u,o}; }
+  function misfit(p, want){ const N=p.u.length; if(N<3) return 1e9; let mu=0,mo=0; for(let i=0;i<N;i++){mu+=p.u[i];mo+=p.o[i];} mu/=N; mo/=N;
+    let d=0; for(let i=0;i<N;i++) d+=Math.abs((p.u[i]-mu)-(p.o[i]-mo)); return d/N + 1.5*(1-N/want); }
   const per=spans.map(function(sp){
-    const u=[],o=[]; let eSum=0,eCnt=0;
-    for(let oj=sp[0];oj<=sp[1]&&oj<m;oj++){
-      for(const ui of o2u[oj]){ eSum+=userF.fe[ui]; eCnt++;
-        if(origF.fp && userF.fp && origF.fv[oj] && userF.fv[ui]){ u.push(userF.fp[ui]); o.push(origF.fp[oj]); } }
-    }
-    return {u,o,avgE:eCnt?eSum/eCnt:0};
+    let want=0; for(let j=sp[0];j<=sp[1]&&j<m;j++) if(Ov[j]) want++;
+    if(want<3) return null;                                    // too short to judge in the original
+    let best={u:[],o:[]}, bf=1e9;
+    for(let s=-SHIFT;s<=SHIFT;s++){ const p=pairs(sp,s), f=misfit(p,want); if(f<bf){ bf=f; best=p; } }
+    return best;
   });
   return per.map(function(w,wi){
-    if(w.avgE<0.06) return {score:0, dev:null};                // missed / silent
-    // window = word + neighbours, so short words still have enough melody to judge
-    let u=[],o=[]; for(let k=Math.max(0,wi-1);k<=Math.min(per.length-1,wi+1);k++){ u=u.concat(per[k].u); o=o.concat(per[k].o); }
-    if(u.length<6) return {score:50, dev:null};                // unmeasurable melody -> neutral
-    const n=u.length; let mu=0,mo=0; for(let i=0;i<n;i++){mu+=u[i];mo+=o[i];} mu/=n; mo/=n;
-    // deviation after removing the local offset, relative to how much the original moves here
-    let dev=0, spread=0; for(let i=0;i<n;i++){ dev+=Math.abs((u[i]-mu)-(o[i]-mo)); spread+=Math.abs(o[i]-mo); } dev/=n; spread/=n;
-    const ratio=dev/Math.max(spread,0.8);                       // 0 = perfect, ~1 = no better than a flat line
-    const sDev=Math.max(0,Math.min(1,(0.95-ratio)/0.6));
+    if(w==null) return null;
+    let u=[],o=[]; for(let k=Math.max(0,wi-1);k<=Math.min(per.length-1,wi+1);k++) if(per[k]){ u=u.concat(per[k].u); o=o.concat(per[k].o); }
+    if(u.length<6) return 0;                                   // no sung melody where this word should be
+    const N=u.length; let mu=0,mo=0; for(let i=0;i<N;i++){mu+=u[i];mo+=o[i];} mu/=N; mo/=N;
+    let dev=0,spread=0; for(let i=0;i<N;i++){ dev+=Math.abs((u[i]-mu)-(o[i]-mo)); spread+=Math.abs(o[i]-mo); } dev/=N; spread/=N;
+    const ratio=dev/Math.max(spread,0.8), sDev=Math.max(0,Math.min(1,(0.95-ratio)/0.6));
     const c=pearson(u,o), sCor=Math.max(0,Math.min(1,(c-0.15)/0.6));
-    return {score:Math.round(100*(0.5*sDev+0.5*sCor)), dev};
+    return Math.round(100*(0.5*sDev+0.5*sCor));
   });
+}
+/* spans = [[oj0,oj1]] frame ranges of the words in the original */
+function scoreReading(userF, origF, spans){
+  const raw=melodyScores(userF, origF, spans), f=userF.fp? chantFactor(userF, origF) : 0;
+  const known=raw.filter(x=>x!=null), mean=known.length? known.reduce((a,x)=>a+x,0)/known.length : 0;
+  const scores=raw.map(x=>({score:Math.round((x==null?mean:x)*f)}));   // unjudgeable words follow the verse
+  return {scores, overall: scores.length? Math.round(scores.reduce((a,s)=>a+s.score,0)/scores.length) : null};
+}
+function wordSpans(words, hop, m){
+  return words.map(function(w){ const a=Math.max(0,Math.floor(w[0]/hop)), b=Math.min(m-1,Math.ceil(w[1]/hop)); return [a,Math.max(a,b)]; });
 }
 function colorWords(vi, scores){
   clearWordColors(vi);
@@ -1115,11 +1136,10 @@ function compareFull(){
           const userF=dropSilence(computeUserFrames(buf));
           const ref=buildFullRef();
           if(!userF){ l4r.innerHTML='<div class="cmp-loading">לא הצלחתי לנתח את ההקלטה.</div>'; return; }
-          const path=dtwPath(userF, ref);
-          const ws=scoreWords(path, userF, ref, ref.words.map(function(w){ return [w.oj0, w.oj1]; }));
-          const scores=ref.words.map(function(w,k){ return {vi:w.vi, wi:w.wi, score:ws[k].score}; });
+          const r=scoreReading(userF, ref, ref.words.map(function(w){ return [w.oj0, w.oj1]; }));
+          const scores=ref.words.map(function(w,k){ return {vi:w.vi, wi:w.wi, score:r.scores[k].score}; });
           colorFull(scores);
-          const overall=Math.round(scores.reduce(function(a,s){return a+s.score;},0)/scores.length);
+          const overall=r.overall||0;
           const oc=overall>=75?"good":(overall>=50?"":"warn");
           l4r.innerHTML='<div class="cmp-head">🔍 השוואת כל הקטע <span class="cmp-x" title="סגור">✕</span></div>'+
             '<div class="cmp-rows"><div class="cmp-row"><span>דיוק כולל:</span> <b class="'+oc+'">'+overall+'%</b></div>'+
