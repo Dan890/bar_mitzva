@@ -54,24 +54,13 @@ def transcribe(wav, model_name, prompt):
     return out
 
 
-def main():
-    sys.stdout.reconfigure(encoding="utf-8")
-    ap = argparse.ArgumentParser()
-    ap.add_argument("student")
-    ap.add_argument("--model", default="ivrit-ai/whisper-large-v3-turbo-ct2")
-    ap.add_argument("--retranscribe", action="store_true")
-    a = ap.parse_args()
+def align_words(verses, hyp, audio_end, tail=None, log=print):
+    """Word/verse timings of `verses` in a whisper transcript.
 
-    verses = load_js(os.path.join(a.student, "data.js"), "window.VERSES")
-    wav = os.path.join(a.student, "media", "_full16k.wav")
-    cache = os.path.join(a.student, "media", "_whisper.json")
-
-    if a.retranscribe or not os.path.exists(cache):
-        plain = " ".join(DROP.sub("", w["t"]) for w in verses[0]["words"])
-        hyp = transcribe(wav, a.model, plain)
-        json.dump(hyp, open(cache, "w", encoding="utf-8"), ensure_ascii=False)
-    hyp = json.load(open(cache, encoding="utf-8"))
-
+    tail: when the recording runs on past the text (a reference that holds more of the parsha),
+    the last verse ends `tail` s after its last recognised word instead of at the audio end.
+    Returns (timings per verse, matched-word ratio per verse).
+    """
     # hypothesis chars with a time each (spread evenly across the whisper word)
     hc, ht = [], []
     for h in hyp:
@@ -109,9 +98,6 @@ def main():
     known = [i for i in range(n) if st[i] is not None]
     if not known:
         raise SystemExit("no alignment found — check the recording/text match")
-    import wave
-    with wave.open(wav) as w:
-        audio_end = w.getnframes() / w.getframerate()
     end_t = max(hits[known[-1]]) if known[-1] in hits else audio_end
     for i in range(known[0]):                               # leading gap
         st[i] = st[known[0]]
@@ -125,18 +111,53 @@ def main():
             st[k] = t0 + (t1 - t0) * acc / wsum
             acc += words[k][2]
 
-    out = []
+    def hyp_end_at(t):                                    # end of the whisper word sounding at t
+        return next((h["e"] for h in hyp if h["s"] <= t <= h["e"] + 0.05), t)
+
+    out, ratios = [], []
     for vi, v in enumerate(verses):
         idx = [k for k in range(n) if words[k][0] == vi]
         nxt = idx[-1] + 1
-        v_end = st[nxt] if nxt < n else min(audio_end, max(end_t, hyp[-1]["e"]) + 0.8)
+        if nxt < n:
+            v_end = st[nxt]
+        elif tail is not None:
+            v_end = min(audio_end, hyp_end_at(end_t) + tail)
+        else:
+            v_end = min(audio_end, max(end_t, hyp[-1]["e"]) + 0.8)
         ws = []
         for j, k in enumerate(idx):
             e = st[idx[j + 1]] if j + 1 < len(idx) else v_end
             ws.append({"s": round(st[k], 2), "e": round(e, 2)})
         ratio = sum(1 for k in idx if k in hits) / len(idx)
-        print(f"{v['ref']:>7}  {st[idx[0]]:7.2f}–{v_end:7.2f}  matched {ratio:4.0%}" + ("   ← לבדוק" if ratio < 0.6 else ""))
+        ratios.append(ratio)
+        log(f"{v['ref']:>7}  {st[idx[0]]:7.2f}–{v_end:7.2f}  matched {ratio:4.0%}" + ("   ← לבדוק" if ratio < 0.6 else ""))
         out.append({"start": round(st[idx[0]], 2), "end": round(v_end, 2), "words": ws})
+
+    return out, ratios
+
+
+def main():
+    sys.stdout.reconfigure(encoding="utf-8")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("student")
+    ap.add_argument("--model", default="ivrit-ai/whisper-large-v3-turbo-ct2")
+    ap.add_argument("--retranscribe", action="store_true")
+    a = ap.parse_args()
+
+    verses = load_js(os.path.join(a.student, "data.js"), "window.VERSES")
+    wav = os.path.join(a.student, "media", "_full16k.wav")
+    cache = os.path.join(a.student, "media", "_whisper.json")
+
+    if a.retranscribe or not os.path.exists(cache):
+        plain = " ".join(DROP.sub("", w["t"]) for w in verses[0]["words"])
+        hyp = transcribe(wav, a.model, plain)
+        json.dump(hyp, open(cache, "w", encoding="utf-8"), ensure_ascii=False)
+    hyp = json.load(open(cache, encoding="utf-8"))
+
+    import wave
+    with wave.open(wav) as w:
+        audio_end = w.getnframes() / w.getframerate()
+    out, _ = align_words(verses, hyp, audio_end)
 
     path = os.path.join(a.student, "timings.js")
     with open(path, "w", encoding="utf-8") as f:

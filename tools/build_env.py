@@ -72,6 +72,7 @@ def frames(data):
         f0s.append(f0)
         fv.append(1 if (row[best] < THRESH and 80 <= f0 <= 400) else 0)
     f0s, fv = np.array(f0s), np.array(fv)
+    f0s = fold_octaves(f0s, fv)
     fe = fe / (fe.max() or 1)
     voiced = f0s[fv == 1]
     med = float(np.median(voiced)) if len(voiced) >= 5 else 0.0
@@ -83,6 +84,23 @@ def frames(data):
     else:
         fp = np.zeros(len(f0s))
     return fe, fp, fv, med
+
+
+def fold_octaves(f0s, fv, win=25):
+    """Octave errors: with a deep voice on a phone mic the fundamental is weak and YIN locks onto
+    the 2nd/3rd harmonic. A voiced frame far above the local (+-1 s) median is brought down
+    by the whole multiple; a real chant step never comes near 1.7x (9 semitones) of it."""
+    f0s = f0s.copy()
+    vi = np.nonzero(fv == 1)[0]
+    if len(vi) < 5:
+        return f0s
+    vals = f0s[vi]
+    for k, i in enumerate(vi):
+        near = vals[max(0, k - win):k + win + 1]
+        loc = np.median(near[near < 1.7 * np.median(near)]) if len(near) else 0
+        if loc and f0s[i] > 1.7 * loc:
+            f0s[i] /= max(2, round(f0s[i] / loc))
+    return f0s
 
 
 def main():

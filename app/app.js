@@ -8,10 +8,12 @@ const STUDENT = window.STUDENT || { id:"ori", name:"אורי" };
 const SID = STUDENT.id || "ori";
 const BRAND = STUDENT.brand || "תורה אורי";
 const LEGACY = (SID === "ori");                    // "ori" keeps the original keys so nothing is lost
-const LS_KEY  = LEGACY ? "ori_timings_v1" : SID + "_timings_v1";
+// a student with several aliyot keeps timings & recordings per aliyah (the first keeps the old keys)
+const SEC = STUDENT.section ? "_" + STUDENT.section : "";
+const LS_KEY  = LEGACY ? "ori_timings_v1" : SID + SEC + "_timings_v1";
 const K_NIKUD = LEGACY ? "ori_nikud"      : SID + "_nikud";
 const K_THEME = LEGACY ? "ori_theme"      : SID + "_theme";
-const DB_NAME = LEGACY ? "toraOr"         : "toraOr_" + SID;
+const DB_NAME = LEGACY ? "toraOr"         : "toraOr_" + SID + SEC;
 const K_LEVEL  = SID + "_level";
 const K_TAAMIM = SID + "_taamim";
 
@@ -26,7 +28,20 @@ function initStudent(){
     }
     const sub=document.getElementById("studentSub"); if(sub && STUDENT.subtitle) sub.textContent=STUDENT.subtitle;
     const rf=document.getElementById("studentRef"); if(rf && STUDENT.ref) rf.textContent=STUDENT.ref;
+    buildAliyahTabs();
   }catch(e){}
+}
+/* aliyah picker: each aliyah is the same page with ?a=N (index.html loads that aliyah's files) */
+function buildAliyahTabs(){
+  const list=STUDENT.aliyot, cur=STUDENT.aliyah;
+  if(!list || list.length<2 || !cur) return;
+  const nav=document.createElement("nav"); nav.className="aliyah-tabs"; nav.setAttribute("aria-label","בחירת עלייה");
+  list.forEach(function(a){
+    const b=document.createElement("a"); b.href="?a="+a.id; b.textContent=a.label;
+    if(a.id===cur.id){ b.className="on"; b.setAttribute("aria-current","page"); }
+    nav.appendChild(b);
+  });
+  const rf=document.getElementById("studentRef"); rf.parentNode.insertBefore(nav, rf.nextSibling);
 }
 
 /* ---------- timing store (defaults + localStorage overrides) ---------- */
@@ -626,6 +641,23 @@ function ensureCmpBox(vi){
   if(!box){ box=document.createElement('div'); box.className='cmp-result'; body.appendChild(box); }
   return box;
 }
+/* The original plus extra reference readers (refs_env.js, same features). A reading is scored
+   against each and the closest counts: a correct reading that follows another reader's melody
+   is not marked wrong. */
+function verseRefs(vi){
+  const out=[];
+  if(window.ORIG_ENV && ORIG_ENV.verses[vi]) out.push({name:null, env:ORIG_ENV.verses[vi]});
+  (window.REF_ENVS||[]).forEach(function(r){ if(r.verses[vi]) out.push({name:r.name, env:r.verses[vi]}); });
+  return out;
+}
+function bestReading(userF, cands){
+  let best=null;
+  cands.forEach(function(c){
+    const r=scoreReading(userF, c.ref, c.spans);
+    if(!best || r.overall>best.r.overall) best={r:r, c:c};
+  });
+  return best;
+}
 function compareVerse(vi){
   const oe = window.ORIG_ENV && ORIG_ENV.verses[vi];
   if(!oe){ uiAlert("אין נתוני מקור לפסוק זה.",{icon:"ℹ️"}); return; }
@@ -639,14 +671,16 @@ function compareVerse(vi){
         setTimeout(()=>{
           const HOP=ORIG_ENV.hop||0.04;
           const userF=dropSilence(computeUserFrames(buf));
-          const origF={fe:oe.fe, fp:oe.fp, fv:oe.fv, hop:HOP};
-          let scores=null, overall=null;
+          let scores=null, overall=null, ref=oe, refName=null;
           if(userF){
-            const r=scoreReading(userF, origF, wordSpans(oe.words, HOP, oe.fe.length));
-            scores=r.scores; overall=r.overall;
+            const b=bestReading(userF, verseRefs(vi).map(function(c){
+              return {name:c.name, env:c.env, ref:{fe:c.env.fe, fp:c.env.fp, fv:c.env.fv, hop:HOP},
+                      spans:wordSpans(c.env.words, HOP, c.env.fe.length)};
+            }));
+            scores=b.r.scores; overall=b.r.overall; ref=b.c.env; refName=b.c.name;
             colorWords(vi, scores);
           }
-          renderCompare(vi,{userDur:buf.duration, origDur:oe.dur, oe, userF, scores, overall});
+          renderCompare(vi,{userDur:buf.duration, origDur:ref.dur, oe:ref, refName, userF, scores, overall});
         },20);
       });
   }).catch(()=>{ ensureCmpBox(vi).innerHTML='<div class="cmp-loading">לא ניתן לנתח את ההקלטה בדפדפן זה.</div>'; });
@@ -664,9 +698,10 @@ function renderCompare(vi,r){
   const canPitch = r.overall!=null && r.oe.fp && r.userF && r.userF.fp;
   if(r.overall!=null){
     const oc=r.overall>=75?"good":(r.overall>=50?"":"warn");
-    overallRow='<div class="cmp-row"><span>דיוק כולל:</span> <b class="'+oc+'">'+r.overall+'%</b></div>'+
+    overallRow='<div class="cmp-row"><span>דיוק כולל:</span> <b class="'+oc+'">'+r.overall+'%</b>'+
+      (r.refName?' <span class="cmp-sub">(הכי קרוב לקריאה של '+r.refName+')</span>':'')+'</div>'+
       '<div class="cmp-row"><span class="cmp-sub">המילים צבועות על הפסוק: <b class="wg">ירוק</b>=מדויק · <b class="wo">צהוב</b>=כמעט · <b class="wb">אדום</b>=כדאי לתרגל</span></div>';
-    if(canPitch) pitchCanvas='<div class="cmp-caption">קו המנגינה (אתה מול המקור):</div><canvas class="cmp-canvas pitch" height="110"></canvas>';
+    if(canPitch) pitchCanvas='<div class="cmp-caption">קו המנגינה (אתה מול '+(r.refName||"המקור")+'):</div><canvas class="cmp-canvas pitch" height="110"></canvas>';
   } else {
     overallRow='<div class="cmp-row"><span class="cmp-sub">לא זוהתה מספיק שירה בהקלטה לניתוח פר-מילה. נסו להקליט קריאה בטעמים.</span></div>';
   }
@@ -1011,8 +1046,8 @@ if(themeBtn) themeBtn.addEventListener("click", function(){
 let fullRec=false, fullMR=null, fullChunks=[], fullStream=null, fullTimer=null, fullT0=0;
 let fullMine=null, fullMineUrl=null;
 
-function buildFullRef(){
-  const verses=ORIG_ENV.verses, hop=ORIG_ENV.hop;
+function buildFullRef(verses){
+  const hop=ORIG_ENV.hop;
   const fe=[], fp=[], fv=[], words=[]; let off=0, haveP=true;
   for(let vi=0; vi<verses.length; vi++){
     const v=verses[vi];
@@ -1134,15 +1169,22 @@ function compareFull(){
       .then(function(buf){ try{ctx.close();}catch(e){}
         setTimeout(function(){
           const userF=dropSilence(computeUserFrames(buf));
-          const ref=buildFullRef();
           if(!userF){ l4r.innerHTML='<div class="cmp-loading">לא הצלחתי לנתח את ההקלטה.</div>'; return; }
-          const r=scoreReading(userF, ref, ref.words.map(function(w){ return [w.oj0, w.oj1]; }));
+          const readers=[{name:null, verses:ORIG_ENV.verses}].concat((window.REF_ENVS||[]).map(function(x){
+            return {name:x.name, verses:ORIG_ENV.verses.map(function(v,vi){ return x.verses[vi]||v; })};
+          }));
+          const best=bestReading(userF, readers.map(function(x){
+            const ref=buildFullRef(x.verses);
+            return {name:x.name, ref:ref, words:ref.words, spans:ref.words.map(function(w){ return [w.oj0, w.oj1]; })};
+          }));
+          const r=best.r, ref=best.c;
           const scores=ref.words.map(function(w,k){ return {vi:w.vi, wi:w.wi, score:r.scores[k].score}; });
           colorFull(scores);
           const overall=r.overall||0;
           const oc=overall>=75?"good":(overall>=50?"":"warn");
           l4r.innerHTML='<div class="cmp-head">🔍 השוואת כל הקטע <span class="cmp-x" title="סגור">✕</span></div>'+
-            '<div class="cmp-rows"><div class="cmp-row"><span>דיוק כולל:</span> <b class="'+oc+'">'+overall+'%</b></div>'+
+            '<div class="cmp-rows"><div class="cmp-row"><span>דיוק כולל:</span> <b class="'+oc+'">'+overall+'%</b>'+
+            (ref.name?' <span class="cmp-sub">(הכי קרוב לקריאה של '+ref.name+')</span>':'')+'</div>'+
             '<div class="cmp-row"><span class="cmp-sub">המילים צבועות על הקטע: <b class="wg">ירוק</b>=מדויק · <b class="wo">צהוב</b>=כמעט · <b class="wb">אדום</b>=לתרגל</span></div></div>';
           l4r.querySelector(".cmp-x").addEventListener("click",function(){ l4r.style.display="none"; clearFullColors(); });
         },30);

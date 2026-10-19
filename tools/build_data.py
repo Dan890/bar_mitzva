@@ -2,6 +2,7 @@
 
 Usage:
     python tools/build_data.py "Exodus 27:20-30:10" beeri-3f9a1c/data.js
+    python tools/build_data.py "Exodus 28:13-30" beeri-9a8bc7/a2/data.js --ch   # always "chapter:verse"
 
 Text: "Miqra according to the Masorah" (nikud + ta'amei hamikra).
 Where the Masorah text carries a footnote with the reading of Ashkenazi/Sefardi
@@ -63,7 +64,7 @@ def main():
     m = re.match(r".*?(\d+):(\d+)", ref)
     ch, v = int(m.group(1)), int(m.group(2))
     chapters = text if text and isinstance(text[0], list) else [text]
-    multi = len(chapters) > 1
+    multi = len(chapters) > 1 or "--ch" in sys.argv
     verses = []
     for ci, chap in enumerate(chapters):
         if ci > 0:

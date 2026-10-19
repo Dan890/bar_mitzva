@@ -1,5 +1,5 @@
 /* Service worker — per-student offline shell + media caching (Beeri Shlomo) */
-const CACHE = "beeri-torah-v7";
+const CACHE = "beeri-torah-v8";
 const ASSETS = [
   "./",
   "./index.html",
@@ -7,10 +7,21 @@ const ASSETS = [
   "./data.js",
   "./timings.js",
   "./original_env.js",
+  "./refs_env.js",
+  "./a2/data.js",
+  "./a2/timings.js",
+  "./a2/original_env.js",
+  "./a2/refs_env.js",
+  "./a3/data.js",
+  "./a3/timings.js",
+  "./a3/original_env.js",
+  "./a3/refs_env.js",
   "./manifest.webmanifest",
   "./media/full.oga",
-  "../app/app.js?v=31",
-  "../app/style.css?v=31",
+  "./a2/media/full.oga",
+  "./a3/media/full.oga",
+  "../app/app.js?v=32",
+  "../app/style.css?v=32",
   "../app/fonts/TorahStamAshkenaz.ttf",
   "../app/fonts/TaameyFrankCLM-Medium.ttf",
   "./img/hero-dark.png",
